@@ -4,7 +4,7 @@ import { Type } from 'class-transformer';
 export class GetBlogsQueryDto {
   @IsOptional()
   @Type(() => String)
-  sortBy: string = 'created_at';
+  sortBy: string = 'createdAt';
 
   @IsOptional()
   @IsIn(['asc', 'desc'])

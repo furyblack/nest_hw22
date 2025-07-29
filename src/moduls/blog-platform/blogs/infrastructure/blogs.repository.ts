@@ -32,43 +32,51 @@ export class BlogsRepository {
 
     const qb = this.blogRepo.createQueryBuilder('b');
 
-    //фильтр по имени
-
+    // 1) фильтр
     if (query.searchNameTerm) {
-      qb.andWhere('LOWER(b.name) LIKE :name', {
-        name: `%${query.searchNameTerm.toLowerCase()}%`,
+      qb.where('LOWER(b.name) LIKE :term', {
+        term: `%${query.searchNameTerm.toLowerCase()}%`,
       });
     }
-    //сортировка
 
-    const sortBy = ['name', 'website_url', 'created_at'].includes(query.sortBy)
+    // 2) сортировка
+    const sortBy = ['name', 'websiteUrl', 'createdAt'].includes(query.sortBy)
       ? query.sortBy
-      : 'created_at';
-
+      : 'createdAt';
     const sortDirection =
       query.sortDirection?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    qb.orderBy(`b.${sortBy}`, sortDirection).skip(skip).take(pageSize);
 
+    if (sortBy === 'name') {
+      qb
+        // прямой порядок по name в байтовой колляции
+        .orderBy('b.name COLLATE "C"', sortDirection);
+    } else if (sortBy === 'websiteUrl') {
+      qb.orderBy('b.websiteUrl', sortDirection);
+    } else {
+      qb.orderBy('b.createdAt', sortDirection).addOrderBy(
+        'b.id',
+        sortDirection,
+      );
+    }
+
+    // 3) пагинация — ОБЯЗАТЕЛЬНО использовать take + skip
+    qb.skip(skip).take(pageSize);
+
+    // 4) выполнить запрос
     const [blogs, totalCount] = await qb.getManyAndCount();
+    const pagesCount = Math.ceil(totalCount / pageSize);
 
-    return {
-      pagesCount: Math.ceil(totalCount / pageSize),
-      page,
-      pageSize,
-      totalCount,
-      items: blogs.map((b) => ({
-        id: b.id,
-        name: b.name,
-        description: b.description,
-        websiteUrl: b.websiteUrl,
-      })),
-    };
-  }
+    // 5) маппинг в нужный формат и порядок полей
+    const items = blogs.map((b) => ({
+      name: b.name,
+      description: b.description,
+      websiteUrl: b.websiteUrl,
+      isMembership: b.isMembership,
+      id: b.id,
+      createdAt: b.createdAt.toISOString(),
+    }));
 
-  async findOrNotFoundFail(id: string): Promise<Blog> {
-    const blog = await this.findBlogById(id);
-    if (!blog) throw new NotFoundException('Blog not found');
-    return blog;
+    return { pagesCount, page, pageSize, totalCount, items };
   }
 
   async updateBlog(id: string, dto: UpdateBlogDto): Promise<void> {
