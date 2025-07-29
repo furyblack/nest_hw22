@@ -1,3 +1,5 @@
+import { Blog } from '../domain/blog.enity';
+
 export class BlogResponseDto {
   id: string;
   name: string;
@@ -15,17 +17,17 @@ export class BlogsViewDto {
   createdAt: string;
   isMembership: boolean;
 
-  static mapToView(blog: any): BlogsViewDto {
+  static mapToView(blog: Blog): BlogsViewDto {
     return {
       id: blog.id,
       name: blog.name,
       description: blog.description,
-      websiteUrl: blog.website_url,
+      websiteUrl: blog.websiteUrl,
       createdAt:
-        blog.created_at instanceof Date
-          ? blog.created_at.toISOString()
-          : blog.created_at,
-      isMembership: blog.is_membership,
+        blog.createdAt instanceof Date
+          ? blog.createdAt.toISOString()
+          : blog.createdAt,
+      isMembership: blog.isMembership,
     };
   }
 }

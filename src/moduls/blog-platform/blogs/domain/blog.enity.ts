@@ -1,5 +1,6 @@
 import {
   Column,
+  CreateDateColumn,
   Entity,
   JoinColumn,
   ManyToOne,
@@ -21,18 +22,18 @@ export class Blog {
   description: string;
 
   @Column()
-  website: string;
+  websiteUrl: string;
+
+  @CreateDateColumn()
+  createdAt: Date;
 
   @Column({ default: false })
-  isEmailConfirmed: boolean;
+  isMembership: boolean;
 
   /** 🔗 Blog → User */
   @ManyToOne(() => User, (user) => user.blogs, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   owner: User;
-
-  @Column({ type: 'uuid', nullable: true })
-  user_id: string;
 
   /** 🔗 Blog → Posts */
   @OneToMany(() => Post, (post) => post.blog)

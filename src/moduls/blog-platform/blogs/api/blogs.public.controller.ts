@@ -34,6 +34,7 @@ export class PublicBlogsController {
   async getBlogById(@Param('id') id: string): Promise<BlogsViewDto> {
     return this.blogsQueryRepo.getByIdOrNotFoundFail(id);
   }
+
   @Get(':id/posts')
   @UseGuards(JwtOptionalAuthGuard)
   @HttpCode(HttpStatus.OK)

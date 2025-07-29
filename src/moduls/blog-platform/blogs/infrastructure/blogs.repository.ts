@@ -16,8 +16,10 @@ export class BlogsRepository {
     const blog = this.blogRepo.create({
       name: dto.name,
       description: dto.description,
-      website: dto.websiteUrl,
+      websiteUrl: dto.websiteUrl,
+      isMembership: false,
     });
+
     return this.blogRepo.save(blog);
   }
   async findBlogById(id: string): Promise<Blog | null> {
@@ -58,7 +60,7 @@ export class BlogsRepository {
         id: b.id,
         name: b.name,
         description: b.description,
-        websiteUrl: b.website,
+        websiteUrl: b.websiteUrl,
       })),
     };
   }
@@ -73,7 +75,7 @@ export class BlogsRepository {
     const result = await this.blogRepo.update(id, {
       name: dto.name,
       description: dto.description,
-      website: dto.websiteUrl,
+      websiteUrl: dto.websiteUrl,
     });
 
     if (result.affected === 0) {
