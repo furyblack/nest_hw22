@@ -42,7 +42,16 @@ export class PostsRepository {
       sortDirection = 'desc',
     } = query;
 
-    // Основной запрос для постов
+    const allowedSortFields = [
+      'createdAt',
+      'title',
+      'shortDescription',
+      'content',
+    ];
+    const safeSortBy = allowedSortFields.includes(sortBy)
+      ? sortBy
+      : 'createdAt';
+
     const qb = this.postRepo
       .createQueryBuilder('post')
       .leftJoinAndSelect('post.blog', 'blog')
@@ -50,7 +59,10 @@ export class PostsRepository {
       .andWhere('post.deletionStatus = :status', {
         status: DeletionStatus.ACTIVE,
       })
-      .orderBy(`post.${sortBy}`, sortDirection.toUpperCase() as 'ASC' | 'DESC')
+      .orderBy(
+        `post.${safeSortBy}`,
+        sortDirection.toUpperCase() as 'ASC' | 'DESC',
+      )
       .skip((pageNumber - 1) * pageSize)
       .take(pageSize);
 
@@ -150,13 +162,33 @@ export class PostsRepository {
       sortDirection = 'desc',
     } = query;
 
+    const allowedSortFields = [
+      'createdAt',
+      'title',
+      'shortDescription',
+      'content',
+      'blogName',
+    ];
+    const safeSortBy = allowedSortFields.includes(sortBy)
+      ? sortBy
+      : 'createdAt';
+
     const qb = this.postRepo
       .createQueryBuilder('post')
       .leftJoinAndSelect('post.blog', 'blog')
-      .where('post.deletionStatus = :status', { status: DeletionStatus.ACTIVE })
-      .orderBy(`post.${sortBy}`, sortDirection.toUpperCase() as 'ASC' | 'DESC')
-      .skip((pageNumber - 1) * pageSize)
-      .take(pageSize);
+      .where('post.deletionStatus = :status', {
+        status: DeletionStatus.ACTIVE,
+      });
+
+    if (safeSortBy === 'blogName') {
+      qb.orderBy('blog.name', sortDirection.toUpperCase() as 'ASC' | 'DESC');
+    } else {
+      qb.orderBy(
+        `post.${safeSortBy}`,
+        sortDirection.toUpperCase() as 'ASC' | 'DESC',
+      );
+    }
+    qb.skip((pageNumber - 1) * pageSize).take(pageSize);
 
     const [items, totalCount] = await qb.getManyAndCount();
 
