@@ -23,6 +23,7 @@ import { GetPostsQueryDto } from '../../posts/dto/get-posts-query.dto';
 import { PostViewDto } from '../../posts/dto/posts-view.dto';
 import { Pagination } from '../../posts/dto/pagination.dto';
 import { UpdatePostDto } from '../../posts/dto/update.post.dto';
+import { CurrentUser } from '../../../user-accounts/decarators/current-user';
 
 @Controller('sa/blogs')
 @UseGuards(BasicAuthGuard)
@@ -74,6 +75,7 @@ export class BlogsSaController {
   async getPostsForBlog(
     @Param('id') blogId: string,
     @Query() query: GetPostsQueryDto,
+    @CurrentUser('userId') userId?: string,
   ): Promise<Pagination<PostViewDto>> {
     return this.postsService.getPostsByBlog(blogId, query);
   }

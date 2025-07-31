@@ -5,7 +5,6 @@ import { CreatePostDto } from '../dto/create-post.dto';
 import { GetPostsQueryDto } from '../dto/get-posts-query.dto';
 import { PostViewDto } from '../dto/posts-view.dto';
 import { Pagination } from '../dto/pagination.dto';
-import { LikeStatus } from '../likes/like.enum';
 import { UpdatePostDto } from '../dto/update.post.dto';
 import { LikeStatusEnum } from '../dto/like-status.dto';
 
@@ -23,41 +22,29 @@ export class PostsService {
     const blog = await this.blogsRepo.findBlogById(blogId);
     if (!blog) throw new NotFoundException();
 
-    const post = await this.postsRepo.create({
+    const post = await this.postsRepo.createPost({
       ...dto,
-      blogId,
-      blogName: blog.name,
+      blog,
     });
 
-    return this.mapToView(post);
+    return this.postsRepo.findPostById(post.id);
   }
 
   async getPostsByBlog(
     blogId: string,
     query: GetPostsQueryDto,
+    userId?: string,
   ): Promise<Pagination<PostViewDto>> {
-    return this.postsRepo.getPostsByBlogId(blogId, query);
+    const blog = await this.blogsRepo.findBlogById(blogId);
+    if (!blog) throw new NotFoundException();
+
+    return this.postsRepo.getPostsByBlogId(blogId, query, userId);
   }
 
-  private mapToView(post: any): PostViewDto {
-    return {
-      id: post.id,
-      title: post.title,
-      shortDescription: post.short_description,
-      content: post.content,
-      blogId: post.blog_id,
-      blogName: post.blog_name,
-      createdAt: post.created_at,
-      extendedLikesInfo: {
-        likesCount: 0,
-        dislikesCount: 0,
-        myStatus: LikeStatus.None,
-        newestLikes: [],
-      },
-    };
-  }
-
-  async getAllPosts(query: GetPostsQueryDto, userId?: string) {
+  async getAllPosts(
+    query: GetPostsQueryDto,
+    userId?: string,
+  ): Promise<Pagination<PostViewDto>> {
     return this.postsRepo.getAllPostsWithPagination(query, userId);
   }
 
@@ -76,7 +63,7 @@ export class PostsService {
   async deletePost(postId: string, blogId: string): Promise<void> {
     const isDeleted = await this.postsRepo.deletePost(postId, blogId);
     if (!isDeleted) {
-      throw new NotFoundException(); // <-- проверка здесь
+      throw new NotFoundException();
     }
   }
 

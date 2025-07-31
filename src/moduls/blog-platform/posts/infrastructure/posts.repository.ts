@@ -1,356 +1,250 @@
 import { Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { GetPostsQueryDto } from '../dto/get-posts-query.dto';
-import { LikeStatus } from '../likes/like.enum';
+
+import { DeletionStatus, Post } from '../domain/post.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { CreatePostDto } from '../dto/create-post.dto';
+import { Blog } from '../../blogs/domain/blog.enity';
+import { Pagination } from '../dto/pagination.dto';
+import { PostViewDto } from '../dto/posts-view.dto';
 import { UpdatePostDto } from '../dto/update.post.dto';
-import { LikeStatusEnum } from '../dto/like-status.dto';
+import { LikeStatus } from '../likes/like.enum';
 
 @Injectable()
 export class PostsRepository {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectRepository(Post)
+    private readonly postRepo: Repository<Post>,
+    private readonly dataSource: DataSource,
+  ) {}
 
-  async create(post: {
-    title: string;
-    shortDescription: string;
-    content: string;
-    blogId: string;
-    blogName: string;
-  }) {
-    const { title, shortDescription, content, blogId, blogName } = post;
+  async createPost(dto: CreatePostDto & { blog: Blog }): Promise<Post> {
+    const post = this.postRepo.create({
+      title: dto.title,
+      shortDescription: dto.shortDescription,
+      content: dto.content,
+      blog: dto.blog,
+    });
 
-    const sql = `
-      INSERT INTO posts (title, short_description, content, blog_id, blog_name)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `;
-    const values = [title, shortDescription, content, blogId, blogName];
-
-    const result = await this.dataSource.query(sql, values);
-    return result[0];
+    return this.postRepo.save(post);
   }
 
   async getPostsByBlogId(
     blogId: string,
     query: GetPostsQueryDto,
     userId?: string,
-  ) {
-    const page = query.pageNumber || 1;
-    const pageSize = query.pageSize || 10;
-    const skip = (page - 1) * pageSize;
-    const sortBy = query.sortBy || 'created_at';
-    const sortDirection =
-      query.sortDirection?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+  ): Promise<Pagination<PostViewDto>> {
+    const {
+      pageNumber = 1,
+      pageSize = 10,
+      sortBy = 'createdAt',
+      sortDirection = 'desc',
+    } = query;
 
-    // 1. Получаем посты
-    const sql = `
-    SELECT * FROM posts
-    WHERE blog_id = $1 AND deletion_status = 'active'
-    ORDER BY ${sortBy} ${sortDirection}
-    LIMIT $2 OFFSET $3
-  `;
-    const posts = await this.dataSource.query(sql, [blogId, pageSize, skip]);
+    // Основной запрос для постов
+    const qb = this.postRepo
+      .createQueryBuilder('post')
+      .leftJoinAndSelect('post.blog', 'blog')
+      .where('post.blog_id = :blogId', { blogId })
+      .andWhere('post.deletionStatus = :status', {
+        status: DeletionStatus.ACTIVE,
+      })
+      .orderBy(`post.${sortBy}`, sortDirection.toUpperCase() as 'ASC' | 'DESC')
+      .skip((pageNumber - 1) * pageSize)
+      .take(pageSize);
 
-    // 2. Получаем общее количество
-    const countSql = `
-    SELECT COUNT(*) FROM posts
-    WHERE blog_id = $1 AND deletion_status = 'active'
-  `;
-    const countResult = await this.dataSource.query(countSql, [blogId]);
-    const totalCount = parseInt(countResult[0].count, 10);
-    const pagesCount = Math.ceil(totalCount / pageSize);
+    const [items, totalCount] = await qb.getManyAndCount();
 
-    // 3. Получаем лайки для этих постов
-    const postIds = posts.map((p: any) => p.id);
+    // Запрос для лайков текущего пользователя
+    const userLikeStatuses = userId
+      ? await this.getUserLikeStatuses(
+          items.map((p) => p.id),
+          userId,
+        )
+      : {};
 
-    const rawLikes = await this.dataSource.query(
-      `
-    SELECT pl.entity_id,
-           pl.user_id,
-           pl.user_login,
-           pl.status,
-           pl.created_at
-    FROM likes pl
-    WHERE pl.entity_id = ANY($1) AND pl.entity_type = 'Post'
-    ORDER BY pl.created_at DESC
-    `,
-      [postIds],
-    );
+    // Запрос для новейших лайков
+    const newestLikes = await this.getNewestLikes(items.map((p) => p.id));
 
-    // 4. Группируем лайки
-    const likesMap = new Map<
-      string,
-      {
-        likes: any[];
-        dislikes: any[];
-        newestLikes: any[];
-      }
-    >();
-
-    for (const postId of postIds) {
-      likesMap.set(postId, {
-        likes: [],
-        dislikes: [],
-        newestLikes: [],
-      });
-    }
-
-    const userLikesMap = new Map<string, string>();
-    if (userId) {
-      const userLikes = await this.dataSource.query(
-        `
-    SELECT entity_id, status
-    FROM likes
-    WHERE user_id = $1 AND entity_type = 'Post' AND entity_id = ANY($2)
-  `,
-        [userId, postIds],
-      );
-
-      userLikes.forEach((like) => {
-        userLikesMap.set(like.entity_id, like.status);
-      });
-    }
-
-    for (const like of rawLikes) {
-      const group = likesMap.get(like.entity_id);
-      if (!group) continue;
-
-      if (like.status === 'Like') {
-        group.likes.push(like);
-        if (group.newestLikes.length < 3) {
-          group.newestLikes.push({
-            addedAt: new Date(like.created_at).toISOString(),
-            userId: like.user_id,
-            login: like.user_login,
-          });
-        }
-      } else if (like.status === 'Dislike') {
-        group.dislikes.push(like);
-      }
-    }
-
-    // 5. Формируем финальный массив
-    const items = posts.map((p: any) => {
-      const likesData = likesMap.get(p.id)!;
-
-      const myStatus = userLikesMap.get(p.id) || 'None';
-
-      return {
-        id: p.id,
-        title: p.title,
-        shortDescription: p.short_description,
-        content: p.content,
-        blogId: p.blog_id,
-        blogName: p.blog_name,
-        createdAt: p.created_at,
+    return {
+      pagesCount: Math.ceil(totalCount / pageSize),
+      page: pageNumber,
+      pageSize,
+      totalCount,
+      items: items.map((post) => ({
+        id: post.id,
+        title: post.title,
+        shortDescription: post.shortDescription,
+        content: post.content,
+        blogId: post.blog.id,
+        blogName: post.blog.name,
+        createdAt: post.createdAt.toISOString(),
         extendedLikesInfo: {
-          likesCount: likesData.likes.length,
-          dislikesCount: likesData.dislikes.length,
-          myStatus,
-          newestLikes: likesData.newestLikes,
+          likesCount: post.likesCount || 0,
+          dislikesCount: post.dislikesCount || 0,
+          myStatus: userId
+            ? userLikeStatuses[post.id] || LikeStatus.None
+            : LikeStatus.None,
+          newestLikes: newestLikes[post.id] || [],
         },
-      };
-    });
-
-    return {
-      pagesCount,
-      page,
-      pageSize,
-      totalCount,
-      items,
+      })),
     };
   }
 
-  async getAllPostsWithPagination(query: GetPostsQueryDto, userId?: string) {
-    const page = query.pageNumber || 1;
-    const pageSize = query.pageSize || 10;
-    const skip = (page - 1) * pageSize;
-
-    const sortDirection =
-      query.sortDirection?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    const validSortFields: Record<string, string> = {
-      title: 'p.title',
-      created_at: 'p.created_at',
-      short_description: 'p.short_description',
-      blogName: 'b.name COLLATE "C"',
-    };
-    const sortBy = validSortFields[query.sortBy] || 'p.created_at';
-
-    // Получаем посты
-    const posts = await this.dataSource.query(
-      `SELECT p.*, b.name as blogName
-       FROM posts p
-                LEFT JOIN blogs b ON p.blog_id = b.id
-       ORDER BY ${sortBy} ${sortDirection}
-       LIMIT $1 OFFSET $2`,
-      [pageSize, skip],
+  private async getUserLikeStatuses(
+    postIds: string[],
+    userId: string,
+  ): Promise<Record<string, LikeStatus>> {
+    const result = await this.dataSource.query(
+      `SELECT entity_id as "postId", status
+       FROM likes
+       WHERE entity_id = ANY($1) AND user_id = $2 AND entity_type = 'Post'`,
+      [postIds, userId],
     );
 
-    const postIds = posts.map((p) => p.id);
+    return result.reduce((acc: Record<string, LikeStatus>, curr: any) => {
+      acc[curr.postId] = this.normalizeLikeStatus(curr.status);
+      return acc;
+    }, {});
+  }
 
-    // Получаем все лайки для этих постов
-    const rawLikes = await this.dataSource.query(
-      `SELECT entity_id, user_id, user_login, status, created_at
-       FROM likes
-       WHERE entity_id = ANY($1) AND entity_type = 'Post'`,
+  private normalizeLikeStatus(status: string): LikeStatus {
+    if (status === LikeStatus.Like) return LikeStatus.Like;
+    if (status === LikeStatus.Dislike) return LikeStatus.Dislike;
+    return LikeStatus.None;
+  }
+
+  private async getNewestLikes(postIds: string[]) {
+    const result = await this.dataSource.query(
+      `SELECT l.entity_id as "postId", l.user_id as "userId", 
+              l.user_login as "login", l.created_at as "addedAt"
+       FROM likes l
+       WHERE l.entity_id = ANY($1) AND l.entity_type = 'Post' AND l.status = 'Like'
+       ORDER BY l.created_at DESC
+       LIMIT 3`,
       [postIds],
     );
 
-    // Получаем статусы текущего пользователя (если он авторизован)
-    const userLikesMap = new Map<string, string>();
-    if (userId) {
-      const userLikes = await this.dataSource.query(
-        `SELECT entity_id, status 
-       FROM likes 
-       WHERE user_id = $1 AND entity_id = ANY($2) AND entity_type = 'Post'`,
-        [userId, postIds],
-      );
-
-      userLikes.forEach((like) => {
-        userLikesMap.set(like.entity_id, like.status);
-      });
-    }
-
-    // Группируем лайки
-    const likesMap = new Map<
-      string,
-      {
-        likes: any[];
-        dislikes: any[];
-        newestLikes: any[];
+    return result.reduce((acc, curr) => {
+      if (!acc[curr.postId]) {
+        acc[curr.postId] = [];
       }
-    >();
-
-    for (const postId of postIds) {
-      likesMap.set(postId, {
-        likes: [],
-        dislikes: [],
-        newestLikes: [],
+      acc[curr.postId].push({
+        addedAt: curr.addedAt.toISOString(),
+        userId: curr.userId,
+        login: curr.login,
       });
-    }
+      return acc;
+    }, {});
+  }
 
-    for (const like of rawLikes) {
-      const group = likesMap.get(like.entity_id);
-      if (!group) continue;
+  async getAllPostsWithPagination(
+    query: GetPostsQueryDto,
+    userId?: string,
+  ): Promise<Pagination<PostViewDto>> {
+    const {
+      pageNumber = 1,
+      pageSize = 10,
+      sortBy = 'createdAt',
+      sortDirection = 'desc',
+    } = query;
 
-      if (like.status === 'Like') {
-        group.likes.push({
-          addedAt: new Date(like.created_at).toISOString(),
-          userId: like.user_id,
-          login: like.user_login,
-        });
-      } else if (like.status === 'Dislike') {
-        group.dislikes.push(like);
-      }
-    }
+    const qb = this.postRepo
+      .createQueryBuilder('post')
+      .leftJoinAndSelect('post.blog', 'blog')
+      .where('post.deletionStatus = :status', { status: DeletionStatus.ACTIVE })
+      .orderBy(`post.${sortBy}`, sortDirection.toUpperCase() as 'ASC' | 'DESC')
+      .skip((pageNumber - 1) * pageSize)
+      .take(pageSize);
 
-    // Общее количество постов
-    const totalCountResult = await this.dataSource.query(
-      `SELECT COUNT(*) FROM posts`,
-    );
-    const totalCount = parseInt(totalCountResult[0].count, 10);
-    const pagesCount = Math.ceil(totalCount / pageSize);
+    const [items, totalCount] = await qb.getManyAndCount();
 
-    // Формируем результат
+    const userLikeStatuses = userId
+      ? await this.getUserLikeStatuses(
+          items.map((p) => p.id),
+          userId,
+        )
+      : {};
+
+    const newestLikes = await this.getNewestLikes(items.map((p) => p.id));
+
     return {
-      pagesCount,
-      page,
+      pagesCount: Math.ceil(totalCount / pageSize),
+      page: pageNumber,
       pageSize,
       totalCount,
-      items: posts.map((p) => {
-        const likesData = likesMap.get(p.id)!;
-        const myStatus = userId ? userLikesMap.get(p.id) || 'None' : 'None';
-        const newestLikes = likesData.likes
-          .sort(
-            (a, b) =>
-              new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime(),
-          )
-          .slice(0, 3);
-
-        return {
-          id: p.id,
-          title: p.title,
-          shortDescription: p.short_description,
-          content: p.content,
-          blogId: p.blog_id,
-          blogName: p.blogname,
-          createdAt: p.created_at,
-          extendedLikesInfo: {
-            likesCount: likesData.likes.length,
-            dislikesCount: likesData.dislikes.length,
-            myStatus: myStatus as 'Like' | 'Dislike' | 'None',
-            newestLikes,
-          },
-        };
-      }),
+      items: items.map((post) => ({
+        id: post.id,
+        title: post.title,
+        shortDescription: post.shortDescription,
+        content: post.content,
+        blogId: post.blog.id,
+        blogName: post.blog.name,
+        createdAt: post.createdAt.toISOString(),
+        extendedLikesInfo: {
+          likesCount: post.likesCount || 0,
+          dislikesCount: post.dislikesCount || 0,
+          myStatus: userId
+            ? userLikeStatuses[post.id] || LikeStatus.None
+            : LikeStatus.None,
+          newestLikes: newestLikes[post.id] || [],
+        },
+      })),
     };
   }
 
-  async findPostById(postId: string, currentUserId?: string) {
-    const result = await this.dataSource.query(
-      `
-          SELECT p.*, b.name as blogName
-          FROM posts p
-                   LEFT JOIN blogs b ON p.blog_id = b.id
-          WHERE p.id = $1
-      `,
-      [postId],
-    );
+  async findPostById(
+    postId: string,
+    userId?: string,
+  ): Promise<PostViewDto | null> {
+    const post = await this.postRepo
+      .createQueryBuilder('post')
+      .leftJoinAndSelect('post.blog', 'blog')
+      .where('post.id = :postId', { postId })
+      .andWhere('post.deletionStatus = :status', {
+        status: DeletionStatus.ACTIVE,
+      })
+      .getOne();
 
-    const post = result[0];
     if (!post) return null;
 
-    // 1. Подсчитать лайки и дизлайки
-    const [likesCountResult, dislikesCountResult] = await Promise.all([
-      this.dataSource.query(
-        `SELECT COUNT(*) FROM likes WHERE entity_id = $1 AND entity_type = 'Post' AND status = 'Like'`,
-        [postId],
-      ),
-      this.dataSource.query(
-        `SELECT COUNT(*) FROM likes WHERE entity_id = $1 AND entity_type = 'Post' AND status = 'Dislike'`,
-        [postId],
-      ),
-    ]);
-
-    const likesCount = parseInt(likesCountResult[0].count, 10);
-    const dislikesCount = parseInt(dislikesCountResult[0].count, 10);
-
-    // 2. Получить статус текущего пользователя
     let myStatus = LikeStatus.None;
-    if (currentUserId) {
-      const statusResult = await this.dataSource.query(
-        `SELECT status FROM likes WHERE user_id = $1 AND entity_id = $2 AND entity_type = 'Post'`,
-        [currentUserId, postId],
+    if (userId) {
+      const like = await this.dataSource.query(
+        `SELECT status FROM likes
+         WHERE entity_id = $1 AND user_id = $2 AND entity_type = 'Post'`,
+        [postId, userId],
       );
-      if (statusResult[0]) {
-        myStatus = statusResult[0].status;
-      }
+      myStatus = this.normalizeLikeStatus(like[0]?.status || LikeStatus.None);
     }
 
-    // 3. Получить 3 последних лайка
     const newestLikes = await this.dataSource.query(
-      `
-    SELECT user_id AS "userId", user_login AS login, created_at AS "addedAt"
-    FROM likes
-    WHERE entity_id = $1 AND entity_type = 'Post' AND status = 'Like'
-    ORDER BY created_at DESC
-    LIMIT 3
-    `,
+      `SELECT user_id as "userId", user_login as "login", created_at as "addedAt"
+       FROM likes 
+       WHERE entity_id = $1 AND entity_type = 'Post' AND status = 'Like'
+       ORDER BY created_at DESC
+       LIMIT 3`,
       [postId],
     );
 
     return {
       id: post.id,
       title: post.title,
-      shortDescription: post.short_description,
+      shortDescription: post.shortDescription,
       content: post.content,
-      blogId: post.blog_id,
-      blogName: post.blogname,
-      createdAt: post.created_at,
+      blogId: post.blog.id,
+      blogName: post.blog.name,
+      createdAt: post.createdAt.toISOString(),
       extendedLikesInfo: {
-        likesCount,
-        dislikesCount,
+        likesCount: post.likesCount || 0,
+        dislikesCount: post.dislikesCount || 0,
         myStatus,
-        newestLikes,
+        newestLikes: newestLikes.map((like) => ({
+          addedAt: like.addedAt.toISOString(),
+          userId: like.userId,
+          login: like.login,
+        })),
       },
     };
   }
@@ -360,67 +254,86 @@ export class PostsRepository {
     blogId: string,
     dto: UpdatePostDto,
   ): Promise<boolean> {
-    console.log('UPDATE post', { postId, blogId, dto });
-    const result = await this.dataSource.query(
-      `
-      UPDATE posts
-      SET title = $1, short_description = $2, content = $3
-      WHERE id = $4 AND blog_id = $5
-      RETURNING id
-      `,
-      [dto.title, dto.shortDescription, dto.content, postId, blogId],
-    );
-    const updatedRows = result[0]; // это массив с обновленными строками
-    return updatedRows.length > 0;
+    const result = await this.postRepo
+      .createQueryBuilder()
+      .update(Post)
+      .set({
+        title: dto.title,
+        shortDescription: dto.shortDescription,
+        content: dto.content,
+      })
+      .where('id = :postId AND blog_id = :blogId', { postId, blogId })
+      .execute();
+
+    return result.affected > 0;
   }
 
   async deletePost(postId: string, blogId: string): Promise<boolean> {
-    const result = await this.dataSource.query(
-      `
-      DELETE FROM posts
-      WHERE id = $1 AND blog_id = $2
-      RETURNING id
-      `,
-      [postId, blogId],
-    );
-    const deletedRows = result[0]; // это массив с удалёнными строками
-    return deletedRows.length > 0;
+    const result = await this.postRepo
+      .createQueryBuilder()
+      .update(Post)
+      .set({ deletionStatus: DeletionStatus.DELETED })
+      .where('id = :postId AND blog_id = :blogId', { postId, blogId })
+      .execute();
+
+    return result.affected > 0;
   }
 
   async updateLikeForPost(
     postId: string,
     userId: string,
     userLogin: string,
-    status: LikeStatusEnum,
+    status: string, // или LikeStatusEnum, если у вас есть такой enum
   ): Promise<void> {
-    // Приводим статус к правильному регистру
-    const normalizedStatus =
-      status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+    // Приводим статус к нужному формату
+    const normalizedStatus = this.normalizeLikeStatus(status);
 
-    if (normalizedStatus === 'None') {
+    // Получаем текущий статус лайка пользователя
+    const currentLike = await this.dataSource.query(
+      `SELECT status FROM likes
+       WHERE user_id = $1 AND entity_id = $2 AND entity_type = 'Post'`,
+      [userId, postId],
+    );
+
+    const currentStatus = currentLike[0]?.status;
+
+    // Удаляем старый лайк, если он есть
+    if (currentStatus) {
       await this.dataSource.query(
         `DELETE FROM likes WHERE user_id = $1 AND entity_id = $2 AND entity_type = 'Post'`,
         [userId, postId],
       );
-      return;
+
+      // Обновляем счетчики
+      await this.postRepo
+        .createQueryBuilder()
+        .update(Post)
+        .set({
+          [currentStatus === 'Like' ? 'likesCount' : 'dislikesCount']: () =>
+            `${currentStatus === 'Like' ? 'likesCount' : 'dislikesCount'} - 1`,
+        })
+        .where('id = :postId', { postId })
+        .execute();
     }
 
-    const existing = await this.dataSource.query(
-      `SELECT * FROM likes WHERE user_id = $1 AND entity_id = $2 AND entity_type = 'Post'`,
-      [userId, postId],
-    );
-
-    if (existing.length > 0) {
-      await this.dataSource.query(
-        `UPDATE likes SET status = $1 WHERE user_id = $2 AND entity_id = $3 AND entity_type = 'Post'`,
-        [normalizedStatus, userId, postId],
-      );
-    } else {
+    // Если новый статус не None - добавляем новый лайк
+    if (normalizedStatus !== 'None') {
       await this.dataSource.query(
         `INSERT INTO likes (user_id, user_login, entity_id, entity_type, status, created_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [userId, userLogin, postId, 'Post', normalizedStatus],
+         VALUES ($1, $2, $3, 'Post', $4, NOW())`,
+        [userId, userLogin, postId, normalizedStatus],
       );
+
+      // Обновляем счетчики
+      await this.postRepo
+        .createQueryBuilder()
+        .update(Post)
+        .set({
+          [normalizedStatus === 'Like' ? 'likesCount' : 'dislikesCount']: () =>
+            `${normalizedStatus === 'Like' ? 'likesCount' : 'dislikesCount'} + 1`,
+        })
+        .where('id = :postId', { postId })
+        .execute();
     }
   }
 }

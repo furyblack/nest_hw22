@@ -38,13 +38,16 @@ export class Post {
   @Column({ type: 'uuid' })
   blog_id: string;
 
+  @Column({ type: 'int', default: 0 })
+  likesCount: number;
+
+  @Column({ type: 'int', default: 0 })
+  dislikesCount: number;
+
   /** 🔗 Post → User */
   @ManyToOne(() => User, (user) => user.posts, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   user: User;
-
-  @Column({ type: 'uuid' })
-  user_id: string;
 
   /** 🔗 Post → Comments */
   @OneToMany(() => Comment, (comment) => comment.post)

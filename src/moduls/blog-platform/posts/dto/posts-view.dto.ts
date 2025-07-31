@@ -1,4 +1,4 @@
-import { LikeStatus } from '../likes/like.enum';
+import { ExtendedLikesInfo } from './like-types';
 
 export class NewestLikeDto {
   addedAt: string;
@@ -6,12 +6,7 @@ export class NewestLikeDto {
   login: string;
 }
 
-export class ExtendedLikesInfoDto {
-  likesCount: number;
-  dislikesCount: number;
-  myStatus: LikeStatus;
-  newestLikes: NewestLikeDto[];
-}
+export type LikeStatus = 'None' | 'Like' | 'Dislike';
 
 export class PostViewDto {
   id: string;
@@ -21,5 +16,5 @@ export class PostViewDto {
   blogId: string;
   blogName: string;
   createdAt: string;
-  extendedLikesInfo: ExtendedLikesInfoDto;
+  extendedLikesInfo: ExtendedLikesInfo;
 }
