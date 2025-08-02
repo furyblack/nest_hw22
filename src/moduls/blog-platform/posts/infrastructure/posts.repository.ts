@@ -315,7 +315,7 @@ export class PostsRepository {
     postId: string,
     userId: string,
     userLogin: string,
-    status: string, // или LikeStatusEnum, если у вас есть такой enum
+    status: string,
   ): Promise<void> {
     // Приводим статус к нужному формату
     const normalizedStatus = this.normalizeLikeStatus(status);
